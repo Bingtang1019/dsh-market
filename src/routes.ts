@@ -5609,6 +5609,33 @@ sendJson(response, 200, { updates })
                   `${name}: the desktop app removed its bundle row before refusing the update (bundle-in-use) — restored it so the plugin still loads on the next boot (#935)`)
               }
             }
+            // A FAILED update can also drop rows it never intended to touch.
+            // The rollback path ("restoration of the previous build could not
+            // be verified") rewrites the manifest through pnpm and the plugin
+            // command, and neither carries the bundle rows it did not own: a
+            // bystander keeps its dependency and its node_modules but loses
+            // its `dsh.profile.bundles` row, so it silently stops loading on
+            // the next boot while this operation reported a failure about
+            // something else entirely.
+            //
+            // Restoring is sound exactly because the operation FAILED: nobody
+            // expressed a deliberate removal, and the package is still on
+            // disk — putting the row back restores what the user had before
+            // the operation. A successful update keeps the read-only stance
+            // (#720/#696), where a missing row may be a deliberate switch-off.
+            if (!ok && !cancelled) {
+              const lostRows = bundlesDroppedFromProfile(
+                manifestBefore, config.profile, activeProfileDir,
+                new Set(removedDeclaration === null ? [] : [removedDeclaration.name]),
+              ).filter(bundle => bundle !== name
+                && existsSync(join(activeProfileDir, 'node_modules', bundle, 'package.json')))
+              for (const bundle of lostRows) {
+                if (addProfileBundle(activeProfileDir, bundle)) {
+                  logEvent('warn', 'update-bundles-restored',
+                    `${bundle}: lost its dsh.profile.bundles row while ${name}'s update failed — restored it so the plugin still loads on the next boot (#720)`)
+                }
+              }
+            }
             logEvent(ok || cancelled ? 'info' : 'error', 'update',
               `${name} -> ${target} exit=${String(result.exitCode)}${result.timedOut ? ' TIMEOUT' : ''}${cancelled ? ' CANCELLED' : ''}${stale ? ` STALE(${staleReason ?? 'unknown'})` : ''}${ok || cancelled ? '' : ` err=${failureDetail(result)}`}`)
             // A user-cancelled run is a quiet outcome, not an error.
